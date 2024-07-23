@@ -28,18 +28,49 @@ type ServerSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
 
-	// Foo is an example field of Server. Edit server_types.go to remove/update
-	Foo string `json:"foo,omitempty"`
+	// Fqdn defines the Fully Qualified Domain Name to use for the Uyuni server.
+	//+kubebuilder:validation:Pattern=`^([a-zA-Z0-9]{1}[a-zA-Z0-9-]{0,62})(\.[a-zA-Z0-9]{1}[a-zA-Z0-9-]{0,62})*?(\.[a-zA-Z]{1}[a-zA-Z0-9]{0,62})\.?$`
+	Fqdn string `json:"fqdn"`
+
+	Timezone string `json:"timezone,omitempty"`
+
+	// Email defines the email for the server administrator
+	//+kubebuilder:validation:MinLength=1
+	//+kubebuilder:validation:MaxLength=128
+	Email string `json:"email,omitempty"`
+
+	// EmailFrom defines the email used to send the notification emails.
+	EmailFrom string `json:"email_from,omitempty"`
+
+	// TODO Add flags to set:
+	// - replicas for Hub XML-RPC API, Coco attestation
+	// - enable / disable tftp
+	// - helm chart, version, values
+	// - images
 }
 
 // ServerStatus defines the observed state of Server
 type ServerStatus struct {
 	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+
+	// Represents the observations of an Uyuni server's current state.
+	// Server.status.conditions.type are: "Available", "Degraded"
+	// Server.status.conditions.status are one of True, False, Unknown.
+	// Server.status.conditions.reason the value should be a CamelCase string and producers of specific
+	// condition types may define expected values and meanings for this field, and whether the values
+	// are considered a guaranteed API.
+	// Memcached.status.conditions.Message is a human readable message indicating details about the transition.
+	// For further information see: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
+
+	// Conditions store the status conditions of the Memcached instances
+	// +operator-sdk:csv:customresourcedefinitions:type=status
+	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }
 
 //+kubebuilder:object:root=true
 //+kubebuilder:subresource:status
+//+kubebuilder:printcolumn:name="FQDN",type=string,JSONPath=`.spec.fqdn`
 
 // Server is the Schema for the servers API
 type Server struct {
