@@ -68,6 +68,10 @@ endif
 # tools. (i.e. podman)
 CONTAINER_TOOL ?= docker
 
+# KUBECTL_REPO defines the OBS repo to install kubectl from.
+# By default it is set to none to allow building in OBS with pre-defined repositories.
+KUBECTL_REPO ?=
+
 # Setting SHELL to bash allows bash commands to be executed by recipes.
 # Options are set to exit when a recipe line exits non-zero or a piped command fails.
 SHELL = /usr/bin/env bash -o pipefail
@@ -151,7 +155,7 @@ run: manifests generate fmt vet ## Run a controller from your host.
 # More info: https://docs.docker.com/develop/develop-images/build_enhancements/
 .PHONY: docker-build
 docker-build: ## Build docker image with the manager.
-	$(CONTAINER_TOOL) build -t ${IMG} .
+	$(CONTAINER_TOOL) build -t ${IMG} --build-arg KUBECTL_REPO=${KUBECTL_REPO} .
 
 .PHONY: docker-push
 docker-push: ## Push docker image with the manager.

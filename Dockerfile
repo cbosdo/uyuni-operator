@@ -25,7 +25,12 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o ma
 
 RUN zypper -n in helm
 
-FROM registry.opensuse.org/opensuse/bci-micro:latest
+ARG KUBECTL_REPO
+COPY add_repo.sh /usr/bin
+RUN sh /usr/bin/add_repo.sh ${KUBECTL_REPO}
+RUN zypper -n in kubectl
+
+FROM registry.opensuse.org/opensuse/bci/bci-micro:latest
 WORKDIR /
 COPY --from=builder /workspace/manager .
 COPY --from=builder /usr/bin/helm /usr/bin/helm
