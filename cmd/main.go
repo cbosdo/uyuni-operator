@@ -26,9 +26,12 @@ import (
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/runtime/serializer"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
@@ -122,10 +125,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	gvk := schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "Pod",
+	}
+
+	restClient, err := apiutil.RESTClientForGVK(
+		gvk, false, mgr.GetConfig(),
+		serializer.NewCodecFactory(mgr.GetScheme()),
+		mgr.GetHTTPClient(),
+	)
+	if err != nil {
+		setupLog.Error(err, "unable to create REST client")
+	}
+
+	restMapper := mgr.GetRESTMapper()
+
 	if err = (&controller.ServerReconciler{
-		Client:   mgr.GetClient(),
-		Scheme:   mgr.GetScheme(),
-		Recorder: mgr.GetEventRecorderFor("server-controller"),
+		Client:     mgr.GetClient(),
+		RESTClient: restClient,
+		RESTConfig: mgr.GetConfig(),
+		RESTMapper: &restMapper,
+		Scheme:     mgr.GetScheme(),
+		Recorder:   mgr.GetEventRecorderFor("server-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		setupLog.Error(err, "unable to create controller", "controller", "Server")
 		os.Exit(1)

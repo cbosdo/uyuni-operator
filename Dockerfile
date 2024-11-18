@@ -23,17 +23,8 @@ COPY internal/controller/ internal/controller/
 # by leaving it empty we can ensure that the container and binary shipped on it will have the same platform.
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH} go build -a -o manager cmd/main.go
 
-RUN zypper -n in helm
-
-ARG KUBECTL_REPO
-COPY add_repo.sh /usr/bin
-RUN sh /usr/bin/add_repo.sh ${KUBECTL_REPO}
-RUN zypper -n in kubectl
-
 FROM registry.opensuse.org/opensuse/bci/bci-micro:latest
 WORKDIR /
 COPY --from=builder /workspace/manager .
-COPY --from=builder /usr/bin/helm /usr/bin/helm
-USER 65532:65532
 
 ENTRYPOINT ["/manager"]

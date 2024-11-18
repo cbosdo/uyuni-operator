@@ -21,34 +21,52 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
+	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	uyuni_types "github.com/uyuni-project/uyuni-tools/shared/types"
 )
 
 const serverFinalizer = "uyuni.uyuni-project.org/serverfinalizer"
 
 const (
-	// typeAvailableMemcached represents the status of the Deployment reconciliation
+	// typeAvailableServer represents the status of the Deployment reconciliation
 	typeAvailableServer = "Available"
-	// typeDegradedMemcached represents the status used when the custom resource is deleted and the finalizer operations are must to occur.
+	// typeDegradedServer represents the status used when the server is deleted and the finalizer operations are to occur.
 	typeDegradedServer = "Degraded"
+	// typeProgressingServer represents the status of the server being setup or upgraded.
+	typeProgressingServer = "Progressing"
+)
+
+const (
+	// reasonMirrorPvcMissing is the reason value when the server requires a mirror PVC but can't find it.
+	reasonMirrorPvcMissing = "MirrorPvcMissing"
+	// reasonMissingTLSSecret is the reason value when the server is waiting for the TLS secret to be ready.
+	reasonMissingTLSSecret = "MissingTLSSecret"
+	// reasonMissingDBSSecret is the reason value when the server is waiting for the database secret to be ready.
+	reasonMissingDBSecret = "MissingDBSecret"
 )
 
 // ServerReconciler reconciles a Server object
 type ServerReconciler struct {
 	client.Client
-	Scheme   *runtime.Scheme
-	Recorder record.EventRecorder
+	RESTClient rest.Interface
+	RESTConfig *rest.Config
+	RESTMapper *meta.RESTMapper
+	Scheme     *runtime.Scheme
+	Recorder   record.EventRecorder
 }
 
 //+kubebuilder:rbac:groups=uyuni.uyuni-project.org,resources=servers,verbs=get;list;watch;create;update;patch;delete
@@ -56,13 +74,12 @@ type ServerReconciler struct {
 //+kubebuilder:rbac:groups=uyuni.uyuni-project.org,resources=servers/finalizers,verbs=update
 //+kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=core,resources=pods,verbs=get;list;watch
+//+kubebuilder:rbac:groups=core,resources=secrets,verbs=get;list;watch
+//+kubebuilder:rbac:groups=networking.k8s.io,resources=ingresses,verbs=get;list;watch;create;update;patch;delete
+//+kubebuilder:rbac:groups=core,resources=services,verbs=get;list;watch;create;update;patch;delete
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the Server object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
 //
 // For more details, check Reconcile and its Result here:
 // - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.16.3/pkg/reconcile
@@ -84,15 +101,15 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Let's just set the status as Unknown when no status are available
-	if server.Status.Conditions == nil || len(server.Status.Conditions) == 0 {
-		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+	if len(server.Status.Conditions) == 0 {
+		logger.Info("Starting reconciliation for server")
+		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
 			Type:    typeAvailableServer,
 			Status:  metav1.ConditionUnknown,
 			Reason:  "Reconciling",
 			Message: "Starting reconciliation",
 		})
-		if err = r.Status().Update(ctx, server); err != nil {
-			logger.Error(err, "Failed to update Server status")
+		if err != nil {
 			return ctrl.Result{}, err
 		}
 
@@ -107,97 +124,86 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		}
 	}
 
-	// Let's add a finalizer. Then, we can define some operations which should
-	// occurs before the custom resource to be deleted.
-	// More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/finalizers
-	if !controllerutil.ContainsFinalizer(server, serverFinalizer) {
-		logger.Info("Adding Finalizer for Server")
-		if ok := controllerutil.AddFinalizer(server, serverFinalizer); !ok {
-			logger.Error(err, "Failed to add finalizer into the custom resource")
-			return ctrl.Result{Requeue: true}, nil
-		}
+	// TODO Start a data sync job for migration if requested
 
-		if err = r.Update(ctx, server); err != nil {
-			logger.Error(err, "Failed to update custom resource to add finalizer")
-			return ctrl.Result{}, err
-		}
+	// TODO Do we have a running data sync job to wait for?
+
+	// TODO Do we already have a DB volume to inspect for upgrade?
+
+	// Create PersistentVolumeClaims if needed
+	if err := r.checkVolumeClaims(ctx, server); err != nil {
+		return ctrl.Result{}, err
 	}
 
-	// Check if the Memcached instance is marked to be deleted, which is
-	// indicated by the deletion timestamp being set.
-	isMemcachedMarkedToBeDeleted := server.GetDeletionTimestamp() != nil
-	if isMemcachedMarkedToBeDeleted {
-		if controllerutil.ContainsFinalizer(server, serverFinalizer) {
-			logger.Info("Performing Finalizer Operations for Server before delete CR")
+	// TODO Upgrade existing DB if needed
 
-			// Let's add here an status "Downgrade" to define that this resource begin its process to be terminated.
-			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{Type: typeDegradedServer,
-				Status: metav1.ConditionUnknown, Reason: "Finalizing",
-				Message: fmt.Sprintf("Performing finalizer operations for the custom resource: %s ", server.Name)})
+	// TODO Run the DB finalization job if needed
 
-			if err := r.Status().Update(ctx, server); err != nil {
-				logger.Error(err, "Failed to update Memcached status")
-				return ctrl.Result{}, err
-			}
+	// TODO Run the post upgrade job if needed
 
-			// Perform all operations required before remove the finalizer and allow
-			// the Kubernetes API to remove the custom resource.
-			r.doFinalizerOperationsForServer(server)
+	// Are the secrets available?
+	if !r.hasTLSSecret(ctx, types.NamespacedName{
+		Namespace: server.Namespace, Name: server.Spec.SSL.ServerSecretName,
+	}) {
+		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
+			Type:   typeProgressingServer,
+			Reason: reasonMissingTLSSecret,
+			Status: metav1.ConditionTrue,
+			Message: fmt.Sprintf("Waiting for %s TLS secret in %s namespace",
+				server.Spec.SSL.ServerSecretName,
+				server.Namespace,
+			),
+		})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		return ctrl.Result{}, nil
+	}
 
-			// TODO(user): If you add operations to the doFinalizerOperationsForServer method
-			// then you need to ensure that all worked fine before deleting and updating the Downgrade status
-			// otherwise, you should requeue here.
+	// Create the ingresses
+	if err := r.checkIngresses(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
 
-			// Re-fetch the server Custom Resource before update the status
-			// so that we have the latest state of the resource on the cluster and we will avoid
-			// raise the issue "the object has been modified, please apply
-			// your changes to the latest version and try again" which would re-trigger the reconciliation
+	// Check for the mirror PV if needed
+	if res, err := r.checkMirror(ctx, server); res != nil {
+		return *res, err
+	}
+
+	// Check that we have the DB credentials secret
+	if valid, err := r.checkDBSecret(
+		ctx, req, server,
+		types.NamespacedName{Namespace: server.Namespace, Name: server.Spec.DB.CredentialsSecret},
+	); !valid {
+		return ctrl.Result{}, err
+	}
+
+	if valid, err := r.checkDBSecret(
+		ctx, req, server,
+		types.NamespacedName{Namespace: server.Namespace, Name: server.Spec.ReportDB.CredentialsSecret},
+	); !valid {
+		return ctrl.Result{}, err
+	}
+
+	// Check if the deployment already exists, if not create a new one
+	found := &appsv1.Deployment{}
+	err = r.Get(ctx, types.NamespacedName{Name: adm_kubernetes.ServerDeployName, Namespace: server.Namespace}, found)
+	if err != nil && apierrors.IsNotFound(err) {
+		// Trigger a new installation
+		err := r.installServer(ctx, server)
+		if err != nil {
+			logger.Error(err, "Failed to define new Deployment resource for Server")
 			if err := r.Get(ctx, req.NamespacedName, server); err != nil {
 				logger.Error(err, "Failed to re-fetch server")
 				return ctrl.Result{}, err
 			}
 
-			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{Type: typeDegradedServer,
-				Status: metav1.ConditionTrue, Reason: "Finalizing",
-				Message: fmt.Sprintf("Finalizer operations for custom resource %s name were successfully accomplished", server.Name)})
-
-			if err := r.Status().Update(ctx, server); err != nil {
-				logger.Error(err, "Failed to update Server status")
-				return ctrl.Result{}, err
-			}
-
-			logger.Info("Removing Finalizer for Server after successfully perform the operations")
-			if ok := controllerutil.RemoveFinalizer(server, serverFinalizer); !ok {
-				logger.Error(err, "Failed to remove finalizer for Server")
-				return ctrl.Result{Requeue: true}, nil
-			}
-
-			if err := r.Update(ctx, server); err != nil {
-				logger.Error(err, "Failed to remove finalizer for Server")
-				return ctrl.Result{}, err
-			}
-		}
-		return ctrl.Result{}, nil
-	}
-
-	// TODO(user): your logic here
-
-	// Check if the deployment already exists, if not create a new one
-	found := &appsv1.Deployment{}
-	err = r.Get(ctx, types.NamespacedName{Name: server.Name, Namespace: server.Namespace}, found)
-	if err != nil && apierrors.IsNotFound(err) {
-		// Trigger a new installation
-		err := r.installServer(server)
-		if err != nil {
-			logger.Error(err, "Failed to define new Deployment resource for Server")
-
 			// The following implementation will update the status
-			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{Type: typeAvailableServer,
+			if err := r.setStatusCondition(ctx, req, server, metav1.Condition{
+				Type:   typeAvailableServer,
 				Status: metav1.ConditionFalse, Reason: "Reconciling",
-				Message: fmt.Sprintf("Failed to create Deployment for the custom resource (%s): (%s)", server.Name, err)})
-
-			if err := r.Status().Update(ctx, server); err != nil {
-				logger.Error(err, "Failed to update Server status")
+				Message: fmt.Sprintf("Failed to create Deployment (%s)", err),
+			}); err != nil {
 				return ctrl.Result{}, err
 			}
 
@@ -208,46 +214,207 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		// Let's return the error for the reconciliation be re-trigged again
 		return ctrl.Result{}, err
 	} else {
-		// TODO(user): Perform an upgrade
+		// TODO(user): Perform an upgrade if the status indicates it has been completed.
 	}
 
-	// The following implementation will update the status
-	meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{Type: typeAvailableServer,
-		Status: metav1.ConditionTrue, Reason: "Reconciling",
-		Message: fmt.Sprintf("Deployment for custom resource (%s) created successfully", server.Name)})
+	// Create the services if needed
+	if err := r.checkServices(ctx, server); err != nil {
+		return ctrl.Result{}, err
+	}
 
-	if err := r.Status().Update(ctx, server); err != nil {
-		logger.Error(err, "Failed to update Memcached status")
+	// TODO Create the coco deployment if needed
+
+	// TODO Create the Hub API deployment if needed
+
+	// TODO Create the hub service if needed
+
+	// The following implementation will update the status
+	if err := r.setStatusCondition(ctx, req, server, metav1.Condition{
+		Type:   typeAvailableServer,
+		Status: metav1.ConditionTrue, Reason: "Reconciling",
+		Message: "Server resources created successfully",
+	}); err != nil {
 		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
 }
 
-// doFinalizerOperationsForServer will perform the required operations before delete the CR.
-func (r *ServerReconciler) doFinalizerOperationsForServer(cr *uyuniv1alpha1.Server) {
-	// TODO(user): Add the cleanup steps that the operator
-	// needs to do before the CR can be deleted. Examples
-	// of finalizers include performing backups and deleting
-	// resources that are not owned by this CR, like a PVC.
+func (r *ServerReconciler) setStatusCondition(
+	ctx context.Context,
+	req ctrl.Request,
+	server *uyuniv1alpha1.Server,
+	condition metav1.Condition,
+) error {
+	logger := log.FromContext(ctx)
 
-	// Note: It is not recommended to use finalizers with the purpose of delete resources which are
-	// created and managed in the reconciliation. These ones, such as the Deployment created on this reconcile,
-	// are defined as depended of the custom resource. See that we use the method ctrl.SetControllerReference.
-	// to set the ownerRef which means that the Deployment will be deleted by the Kubernetes API.
-	// More info: https://kubernetes.io/docs/tasks/administer-cluster/use-cascading-deletion/
+	// Ensure the server instance is the latest
+	if err := r.Get(ctx, req.NamespacedName, server); err != nil {
+		logger.Error(err, "Failed to re-fetch server")
+		return err
+	}
 
-	// The following implementation will raise an event
-	r.Recorder.Event(cr, "Warning", "Deleting",
-		fmt.Sprintf("Custom Resource %s is being deleted from the namespace %s",
-			cr.Name,
-			cr.Namespace))
+	meta.SetStatusCondition(&server.Status.Conditions, condition)
+
+	if err := r.Status().Update(ctx, server); err != nil {
+		logger.Error(err, "Failed to update Server status")
+		return err
+	}
+
+	if err := r.Get(ctx, req.NamespacedName, server); err != nil {
+		logger.Error(err, "Failed to re-fetch server after setting condition")
+		return err
+	}
+	return nil
+}
+
+// checkVolumeClaims ensures the PVCs are ready.
+func (r *ServerReconciler) checkVolumeClaims(ctx context.Context, server *uyuniv1alpha1.Server) error {
+	logger := log.FromContext(ctx)
+
+	// Compute the list of PVCs we need
+	mounts := adm_kubernetes.GetServerMounts()
+	mounts = tuneMounts(mounts, &server.Spec.Volumes)
+
+	for _, mount := range mounts {
+		pvc := corev1.PersistentVolumeClaim{}
+		err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: mount.Name}, &pvc)
+		if err != nil && apierrors.IsNotFound(err) {
+			size := mount.Size
+			if size == "" {
+				size = "10Mi"
+			}
+
+			// Create the PVC
+			pvc = corev1.PersistentVolumeClaim{
+				ObjectMeta: metav1.ObjectMeta{
+					Namespace: server.Namespace,
+					Name:      mount.Name,
+					Labels:    labelsForServer(),
+				},
+				Spec: corev1.PersistentVolumeClaimSpec{
+					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+					Resources: corev1.VolumeResourceRequirements{
+						Requests: corev1.ResourceList{"storage": resource.MustParse(size)},
+					},
+				},
+			}
+
+			if err := ctrl.SetControllerReference(server, &pvc, r.Scheme); err != nil {
+				return err
+			}
+
+			if err := r.Create(ctx, &pvc); err != nil {
+				logger.Error(err, "Failed to create pvc %s", mount.Name)
+				return err
+			}
+
+		} else if err != nil {
+			return err
+		}
+		// Nothing to do: the pvc is already available
+	}
+
+	return nil
+}
+
+func tuneMounts(mounts []uyuni_types.VolumeMount, volumesSpec *uyuniv1alpha1.Volumes) []uyuni_types.VolumeMount {
+	tunedMounts := []uyuni_types.VolumeMount{}
+	for _, mount := range mounts {
+		class := volumesSpec.Class
+		var volumeSpec *uyuniv1alpha1.Volume
+		switch mount.Name {
+		case "var-pgsql":
+			volumeSpec = &volumesSpec.Database
+		case "var-spacewalk":
+			volumeSpec = &volumesSpec.Packages
+		case "var-cache":
+			volumeSpec = &volumesSpec.Cache
+		case "srv-www":
+			volumeSpec = &volumesSpec.Www
+		}
+		if volumeSpec != nil {
+			if volumeSpec.Class != "" {
+				class = volumeSpec.Class
+			}
+			mount.Size = volumeSpec.Size
+		}
+		mount.Class = class
+		tunedMounts = append(tunedMounts, mount)
+	}
+	return tunedMounts
+}
+
+// checkMirror ensures that the mirror PVC is present.
+// If the PVC has been found, the result will be nil.
+func (r *ServerReconciler) checkMirror(ctx context.Context, server *uyuniv1alpha1.Server) (*ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
+	if server.Spec.Volumes.Mirror != "" {
+		// Do we already have the PVC?
+		foundPvc := &corev1.PersistentVolumeClaim{}
+		err := r.Get(ctx, types.NamespacedName{Name: server.Spec.Volumes.Mirror, Namespace: server.Namespace}, foundPvc)
+		if err != nil && apierrors.IsNotFound(err) {
+			// The PVC is missing, requeuing
+			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
+				Type:   typeProgressingServer,
+				Reason: reasonMirrorPvcMissing,
+				Status: metav1.ConditionTrue,
+				Message: fmt.Sprintf("PersistentVolumeClaim %s not found in namespace %s",
+					server.Spec.Volumes.Mirror, server.Namespace,
+				),
+			})
+			if err = r.Status().Update(ctx, server); err != nil {
+				logger.Error(err, "Failed to update Server status")
+				return &ctrl.Result{}, err
+			}
+			return &ctrl.Result{Requeue: true}, nil
+		} else if err != nil {
+			return &ctrl.Result{}, err
+		}
+	}
+	return nil, nil
 }
 
 // installServer runs the uyuni server helm chart.
-func (r *ServerReconciler) installServer(server *uyuniv1alpha1.Server) error {
-	// TODO(user): Implement me !
+func (r *ServerReconciler) installServer(ctx context.Context, server *uyuniv1alpha1.Server) error {
+	log := log.FromContext(ctx)
+
+	serverDep, err := r.serverDeployment(server)
+	if err != nil {
+		log.Error(err, "Failed to define new Deployment resource for Server")
+
+		// The following implementation will update the status
+		meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{Type: typeAvailableServer,
+			Status: metav1.ConditionFalse, Reason: "Reconciling",
+			Message: fmt.Sprintf("Failed to create server deployment: (%s)", err)})
+
+		if err := r.Status().Update(ctx, server); err != nil {
+			log.Error(err, "Failed to update Server status")
+			return err
+		}
+
+		return err
+	}
+
+	log.Info("Creating a new Deployment",
+		"Deployment.Namespace", serverDep.Namespace, "Deployment.Name", serverDep.Name)
+	if err = r.Create(ctx, serverDep); err != nil {
+		log.Error(err, "Failed to create new Deployment",
+			"Deployment.Namespace", serverDep.Namespace, "Deployment.Name", serverDep.Name)
+		return err
+	}
+
 	return nil
+}
+
+func labelsForServer() map[string]string {
+	return map[string]string{
+		"app.kubernetes.io/name":       "uyuni-server",
+		"app.kubernetes.io/part-of":    "uyuni",
+		"app.kubernetes.io/component":  "server",
+		"app.kubernetes.io/managed-by": "ServerController",
+	}
 }
 
 // SetupWithManager sets up the controller with the Manager.
