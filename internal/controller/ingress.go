@@ -22,7 +22,8 @@ import (
 	"slices"
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
-	"github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	"github.com/uyuni-project/uyuni-tools/shared/kubernetes"
 	net "k8s.io/api/networking/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -35,7 +36,7 @@ func (r *ServerReconciler) checkIngresses(
 	logger := log.FromContext(ctx)
 
 	caIssuer := server.Spec.SSL.IssuerName
-	ingresses := kubernetes.GetIngresses(
+	ingresses := adm_kubernetes.GetIngresses(
 		server.Namespace,
 		server.Spec.Fqdn,
 		caIssuer,
@@ -57,7 +58,7 @@ func (r *ServerReconciler) checkIngresses(
 		name := ingressDef.ObjectMeta.Name
 
 		ingressDef.ObjectMeta.Name = name
-		ingressDef.ObjectMeta.Labels = labelsForServer()
+		ingressDef.ObjectMeta.Labels = kubernetes.GetLabels(partOf, "")
 
 		// Check and create
 		if slices.ContainsFunc(foundIngresses.Items, func(item net.Ingress) bool {

@@ -79,7 +79,7 @@ func (r *ServerReconciler) serverDeployment(server *uyuniv1alpha1.Server) (*apps
 
 	ports := utils.GetServerPorts(server.Spec.Debug)
 
-	labels := labelsForServer()
+	labels := kubernetes.GetLabels(partOf, componentServer)
 	var replicas int32 = 1
 
 	dep := &appsv1.Deployment{

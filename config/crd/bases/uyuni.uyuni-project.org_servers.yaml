@@ -139,6 +139,28 @@ spec:
                       created outside of the operator."
                     type: integer
                 type: object
+              services:
+                description: Services defines the configuration of the services.
+                properties:
+                  annotations:
+                    additionalProperties:
+                      type: string
+                    description: Annotations defines annotations to set on all the
+                      public services.
+                    type: object
+                  labels:
+                    additionalProperties:
+                      type: string
+                    description: Labels defines additional labels to set on all the
+                      publis services.
+                    type: object
+                  type:
+                    default: ClusterIP
+                    description: Type defines the service type of the public services.
+                      This will not affect internal services that are not supposed
+                      to be accessed by the user.
+                    type: string
+                type: object
               ssl:
                 description: SSL defines how to get the SSL certificates. It can be
                   using existing TLS secrets or cert-manager issuers. If nothing is

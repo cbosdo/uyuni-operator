@@ -102,4 +102,4 @@ require (
 	sigs.k8s.io/yaml v1.4.0 // indirect
 )
 
-replace github.com/uyuni-project/uyuni-tools v0.0.1 => github.com/cbosdo/uyuni-tools v0.0.0-20241121144851-494965f1ad1f
+replace github.com/uyuni-project/uyuni-tools v0.0.1 => github.com/cbosdo/uyuni-tools v0.0.0-20241122143501-a87677c2e8ea

@@ -16,6 +16,12 @@ limitations under the License.
 
 package controller
 
+// partOf is the value of the partOf label for all resources.
+const partOf = "uyuni"
+
+// componentServer is the value of the component label for the big server deployment and pod.
+const componentServer = "server"
+
 const (
 	// typeAvailableServer represents the status of the Deployment reconciliation
 	typeAvailableServer = "Available"

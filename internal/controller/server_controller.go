@@ -317,15 +317,6 @@ func (r *ServerReconciler) installServer(ctx context.Context, server *uyuniv1alp
 	return nil
 }
 
-func labelsForServer() map[string]string {
-	return map[string]string{
-		"app.kubernetes.io/name":       "uyuni-server",
-		"app.kubernetes.io/part-of":    "uyuni",
-		"app.kubernetes.io/component":  "server",
-		"app.kubernetes.io/managed-by": "ServerController",
-	}
-}
-
 // SetupWithManager sets up the controller with the Manager.
 func (r *ServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).

@@ -23,9 +23,10 @@ import (
 	"time"
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
-	"github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
 	"github.com/uyuni-project/uyuni-tools/mgradm/shared/utils"
 	"github.com/uyuni-project/uyuni-tools/shared/api/types"
+	"github.com/uyuni-project/uyuni-tools/shared/kubernetes"
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -55,7 +56,7 @@ func (r *ServerReconciler) checkSetup(ctx context.Context, server *uyuniv1alpha1
 			Status: metav1.ConditionTrue,
 			Reason: reasonSetup,
 			// This message format is important as it's where we find the job name later.
-			Message: fmt.Sprintf("Running setup in job (%s)", jobName),
+			Message: fmt.Sprintf("Running setup in job: %s", jobName),
 		}); err != nil {
 			return &ctrl.Result{}, err
 		}
@@ -103,7 +104,7 @@ func (r *ServerReconciler) createSetupJob(
 		IssParent: "", // No support for ISSv1 in kubernetes!
 	}
 
-	job, err := kubernetes.GetSetupJob(
+	job, err := adm_kubernetes.GetSetupJob(
 		server.Namespace,
 		server.Spec.Image,
 		v1.PullPolicy(server.Spec.PullPolicy),
@@ -120,7 +121,7 @@ func (r *ServerReconciler) createSetupJob(
 		return "", err
 	}
 
-	labels := labelsForServer()
+	labels := kubernetes.GetLabels(partOf, "")
 	labels[jobKindLabel] = jobKindSetup
 	job.ObjectMeta.Labels = labels
 

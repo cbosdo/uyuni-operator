@@ -22,6 +22,7 @@ import (
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
 	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	"github.com/uyuni-project/uyuni-tools/shared/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -50,7 +51,7 @@ func (r *ServerReconciler) checkVolumeClaims(ctx context.Context, server *uyuniv
 				ObjectMeta: metav1.ObjectMeta{
 					Namespace: server.Namespace,
 					Name:      mount.Name,
-					Labels:    labelsForServer(),
+					Labels:    kubernetes.GetLabels(partOf, componentServer),
 				},
 				Spec: corev1.PersistentVolumeClaimSpec{
 					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},

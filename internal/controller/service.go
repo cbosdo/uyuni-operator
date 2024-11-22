@@ -23,23 +23,36 @@ import (
 	"strings"
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
-	"github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
+	"github.com/uyuni-project/uyuni-tools/shared/kubernetes"
+	"github.com/uyuni-project/uyuni-tools/shared/utils"
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
+// publicServices is the list of services that support customization.
+var publicServices = []string{
+	utils.ReportdbServiceName,
+	utils.TftpServiceName,
+	utils.SaltServiceName,
+	utils.CobblerServiceName,
+	utils.TaskoServiceName,
+	utils.TomcatServiceName,
+	utils.SearchServiceName,
+}
+
 func (r *ServerReconciler) checkServices(
 	ctx context.Context,
 	server *uyuniv1alpha1.Server,
 ) (*ctrl.Result, error) {
-	services := kubernetes.GetServices(server.Namespace, server.Spec.Debug)
+	services := adm_kubernetes.GetServices(server.Namespace, server.Spec.Debug)
 
 	managedServices := &corev1.ServiceList{}
 	if err := r.List(
 		ctx, managedServices,
 		client.InNamespace(server.Namespace),
-		client.MatchingLabels{"app.kubernetes.io/name": "uyuni-server"},
+		client.MatchingLabels{"app.kubernetes.io/component": componentServer},
 	); err != nil {
 		return &ctrl.Result{}, fmt.Errorf("Failed to list the managed services (%s)", err)
 	}
@@ -66,8 +79,21 @@ func (r *ServerReconciler) checkServices(
 		name := svc.ObjectMeta.Name
 		overridable := strings.HasSuffix(name, "db")
 		if overridable && !slices.Contains(customServices, svc.ObjectMeta.Name) || !overridable {
-			svc.ObjectMeta.Labels = labelsForServer()
+			svc.ObjectMeta.Labels = kubernetes.GetLabels(partOf, "")
 
+			// Apply the service customization. This should be shared with mgradm.
+			if slices.Contains(publicServices, svc.ObjectMeta.Name) {
+				svc.Spec.Type = corev1.ServiceType(server.Spec.Services.Type)
+				for k, v := range server.Spec.Services.Annotations {
+					svc.ObjectMeta.Annotations[k] = v
+				}
+
+				for k, v := range server.Spec.Services.Labels {
+					svc.ObjectMeta.Labels[k] = v
+				}
+			}
+
+			// Apply changes if needed
 			if slices.ContainsFunc(allServices.Items, func(cmp corev1.Service) bool {
 				return svc.ObjectMeta.Name == cmp.ObjectMeta.Name
 			}) {

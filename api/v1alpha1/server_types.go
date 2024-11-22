@@ -80,6 +80,7 @@ type ServerSpec struct {
 	// A secret of basic-auth type is required here.
 	AdminCredentialsSecret string `json:"adminCredentialsSecret,omitempty"`
 
+	Services `json:"services,omitempty"`
 	// TODO Add flags to set:
 	// - replicas for Hub XML-RPC API, Coco attestation
 	// - enable / disable tftp
@@ -166,6 +167,18 @@ type ReportDB struct {
 	// Name defines the name of the database to connect to.
 	//+kubebuilder:default=`reportdb`
 	Name string `json:"name,omitempty"`
+}
+
+// Services defines the configuration of the services.
+type Services struct {
+	// Type defines the service type of the public services.
+	// This will not affect internal services that are not supposed to be accessed by the user.
+	//+kubebuilder:default=`ClusterIP`
+	Type string `json:"type,omitempty"`
+	// Annotations defines annotations to set on all the public services.
+	Annotations map[string]string `json:"annotations,omitempty"`
+	// Labels defines additional labels to set on all the publis services.
+	Labels map[string]string `json:"labels,omitempty"`
 }
 
 // ServerStatus defines the observed state of Server
