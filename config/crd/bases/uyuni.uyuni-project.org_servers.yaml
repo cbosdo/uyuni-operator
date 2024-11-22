@@ -38,6 +38,12 @@ spec:
           spec:
             description: ServerSpec defines the desired state of Server
             properties:
+              adminCredentialsSecret:
+                description: AdminCredentialsSecret defines the name of the secret
+                  containing the first user credentials. This secret is only used
+                  during the installation and can be disposed of after. A secret of
+                  basic-auth type is required here.
+                type: string
               db:
                 description: DB defines how to access and configure the internal database.
                 properties:
@@ -56,10 +62,8 @@ spec:
                     description: "Host defines the FQDN to use to connect to, for
                       an external database. \n This can be omitted for an external
                       database if the corresponding service is created outside of
-                      the operator. For instance, add a service named test-db describing
-                      how to access the internal database for a server named test.
-                      Likewise a test-reportdb service would be used for the report
-                      database of a server named test."
+                      the operator. A service named db would describe how to access
+                      the internal database."
                     type: string
                   name:
                     default: uyuni
@@ -69,7 +73,7 @@ spec:
                   port:
                     description: "Port defines the port to connect to, for an external
                       database. \n Like Host, this can be omitted if the service is
-                      not created outside of the operator."
+                      created outside of the operator."
                     type: integer
                 type: object
               debug:
@@ -112,12 +116,6 @@ spec:
                 description: ReportDB defines how to access and configure the report
                   database.
                 properties:
-                  adminCredentialsSecret:
-                    description: AdminCredentialsSecret defines the name of the secret
-                      containing the admin credentials to use. This is only needed
-                      for an external Database. The credentials secrets are expected
-                      to container username and password items.
-                    type: string
                   credentialsSecret:
                     description: CredentialsSecret defines the name of the secret
                       containing the credentials to use. The credentials secrets are
@@ -127,20 +125,18 @@ spec:
                     description: "Host defines the FQDN to use to connect to, for
                       an external database. \n This can be omitted for an external
                       database if the corresponding service is created outside of
-                      the operator. For instance, add a service named test-db describing
-                      how to access the internal database for a server named test.
-                      Likewise a test-reportdb service would be used for the report
-                      database of a server named test."
+                      the operator. A service named reportdb would describe how to
+                      access the report database."
                     type: string
                   name:
-                    default: uyuni
+                    default: reportdb
                     description: Name defines the name of the database to connect
                       to.
                     type: string
                   port:
                     description: "Port defines the port to connect to, for an external
                       database. \n Like Host, this can be omitted if the service is
-                      not created outside of the operator."
+                      created outside of the operator."
                     type: integer
                 type: object
               ssl:
@@ -235,7 +231,7 @@ spec:
             description: ServerStatus defines the observed state of Server
             properties:
               conditions:
-                description: Conditions store the status conditions of the Memcached
+                description: Conditions store the status conditions of the Server
                   instances
                 items:
                   description: "Condition contains details for one aspect of the current

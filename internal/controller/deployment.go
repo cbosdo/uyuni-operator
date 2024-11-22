@@ -99,16 +99,18 @@ func (r *ServerReconciler) serverDeployment(server *uyuniv1alpha1.Server) (*apps
 				Spec: corev1.PodSpec{
 					InitContainers: []corev1.Container{
 						{
-							Name:         "init-volumes",
-							Image:        server.Spec.Image,
-							Command:      []string{"sh", "-x", "-c", initScript},
-							VolumeMounts: initMounts,
+							Name:            "init-volumes",
+							Image:           server.Spec.Image,
+							ImagePullPolicy: corev1.PullPolicy(server.Spec.PullPolicy),
+							Command:         []string{"sh", "-x", "-c", initScript},
+							VolumeMounts:    initMounts,
 						},
 					},
 					Containers: []corev1.Container{
 						{
-							Name:  "uyuni",
-							Image: server.Spec.Image,
+							Name:            "uyuni",
+							Image:           server.Spec.Image,
+							ImagePullPolicy: corev1.PullPolicy(server.Spec.PullPolicy),
 							Lifecycle: &corev1.Lifecycle{
 								PreStop: &corev1.LifecycleHandler{
 									Exec: &corev1.ExecAction{
@@ -208,9 +210,11 @@ do
 		if [ "$vol" = "/etc/pki/tls" ]; then
               ln -s /etc/pki/spacewalk-tls/spacewalk.crt /mnt/etc/pki/tls/certs/spacewalk.crt;
               ln -s /etc/pki/spacewalk-tls/spacewalk.key /mnt/etc/pki/tls/private/spacewalk.key;
-              cp /etc/pki/spacewalk-tls/spacewalk.key /mnt/etc/pki/tls/private/pg-spacewalk.key;
-              chown postgres:postgres /mnt/etc/pki/tls/private/pg-spacewalk.key;
 		fi
+	fi
+	if [ "$vol" = "/etc/pki/tls" ]; then
+        cp /etc/pki/spacewalk-tls/spacewalk.key /mnt/etc/pki/tls/private/pg-spacewalk.key;
+        chown postgres:postgres /mnt/etc/pki/tls/private/pg-spacewalk.key;
 	fi
 done
 `
@@ -263,15 +267,4 @@ func volumesForServer(server *uyuniv1alpha1.Server) ([]corev1.Volume, []corev1.V
 	}
 
 	return volumes, mounts
-}
-
-func getVolume(name string, pvcName string) corev1.Volume {
-	return corev1.Volume{
-		Name: name,
-		VolumeSource: corev1.VolumeSource{
-			PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{
-				ClaimName: pvcName,
-			},
-		},
-	}
 }

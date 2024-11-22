@@ -18,22 +18,43 @@ package controller
 
 import (
 	"context"
+	"fmt"
 
+	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/log"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-// hasTLSSecret checks that the secret exists and is of kubernetes.io/tls type.
-func (r *ServerReconciler) hasTLSSecret(ctx context.Context, namespacedName types.NamespacedName) bool {
-	logger := log.FromContext(ctx)
+// checkTLSSecret ensures the TLS secret is ready and sets condition accordingly.
+func (r *ServerReconciler) checkTLSSecret(ctx context.Context, server *uyuniv1alpha1.Server) (*ctrl.Result, error) {
+	name := server.Spec.SSL.ServerSecretName
+	hasTLSSecret := false
 	secret := &corev1.Secret{}
-	if err := r.Get(ctx, namespacedName, secret); err != nil {
+	if err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: name}, secret); err != nil {
 		if !apierrors.IsNotFound(err) {
-			logger.Error(err, "failed to get secret", "secret", namespacedName.Name)
+			return &ctrl.Result{}, fmt.Errorf("Failed to get %s secret (%s)", name, err)
 		}
-		return false
+	} else {
+		hasTLSSecret = secret.Type == "kubernetes.io/tls"
 	}
-	return secret.Type == "kubernetes.io/tls"
+
+	if !hasTLSSecret {
+		err := r.setStatusConditions(ctx, server, metav1.Condition{
+			Type:   typeAvailableServer,
+			Reason: reasonMissingSecret,
+			Status: metav1.ConditionFalse,
+			Message: fmt.Sprintf("Waiting for %s TLS secret in %s namespace",
+				server.Spec.SSL.ServerSecretName,
+				server.Namespace,
+			),
+		})
+		if err != nil {
+			return &ctrl.Result{}, err
+		}
+		return &ctrl.Result{Requeue: true}, nil
+	}
+	return nil, nil
 }

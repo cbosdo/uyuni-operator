@@ -20,9 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // ServerSpec defines the desired state of Server
 type ServerSpec struct {
 	// Fqdn defines the Fully Qualified Domain Name to use for the Uyuni server.
@@ -76,7 +73,12 @@ type ServerSpec struct {
 
 	// ReportDB defines how to access and configure the report database.
 	//+required
-	ReportDB DB `json:"reportdb"`
+	ReportDB `json:"reportdb"`
+
+	// AdminCredentialsSecret defines the name of the secret containing the first user credentials.
+	// This secret is only used during the installation and can be disposed of after.
+	// A secret of basic-auth type is required here.
+	AdminCredentialsSecret string `json:"adminCredentialsSecret,omitempty"`
 
 	// TODO Add flags to set:
 	// - replicas for Hub XML-RPC API, Coco attestation
@@ -135,16 +137,34 @@ type DB struct {
 	// Host defines the FQDN to use to connect to, for an external database.
 	//
 	// This can be omitted for an external database if the corresponding service is created outside
-	// of the operator. For instance, add a service named test-db describing how to access the
-	// internal database for a server named test. Likewise a test-reportdb service would be used
-	// for the report database of a server named test.
+	// of the operator. A service named db would describe how to access the internal database.
 	Host string `json:"host,omitempty"`
 	// Port defines the port to connect to, for an external database.
 	//
-	// Like Host, this can be omitted if the service is not created outside of the operator.
+	// Like Host, this can be omitted if the service is created outside of the operator.
 	Port int `json:"port,omitempty"`
 	// Name defines the name of the database to connect to.
 	//+kubebuilder:default=`uyuni`
+	Name string `json:"name,omitempty"`
+}
+
+// ReportDB defines the configuration of a report database.
+type ReportDB struct {
+	// CredentialsSecret defines the name of the secret containing the credentials to use.
+	// The credentials secrets are expected to container username and password items.
+	//+required
+	CredentialsSecret string `json:"credentialsSecret,omitempty"`
+	// Host defines the FQDN to use to connect to, for an external database.
+	//
+	// This can be omitted for an external database if the corresponding service is created outside
+	// of the operator. A service named reportdb would describe how to access the report database.
+	Host string `json:"host,omitempty"`
+	// Port defines the port to connect to, for an external database.
+	//
+	// Like Host, this can be omitted if the service is created outside of the operator.
+	Port int `json:"port,omitempty"`
+	// Name defines the name of the database to connect to.
+	//+kubebuilder:default=`reportdb`
 	Name string `json:"name,omitempty"`
 }
 
@@ -159,10 +179,10 @@ type ServerStatus struct {
 	// Server.status.conditions.reason the value should be a CamelCase string and producers of specific
 	// condition types may define expected values and meanings for this field, and whether the values
 	// are considered a guaranteed API.
-	// Memcached.status.conditions.Message is a human readable message indicating details about the transition.
+	// Server.status.conditions.Message is a human readable message indicating details about the transition.
 	// For further information see: https://github.com/kubernetes/community/blob/master/contributors/devel/sig-architecture/api-conventions.md#typical-status-properties
 
-	// Conditions store the status conditions of the Memcached instances
+	// Conditions store the status conditions of the Server instances
 	// +operator-sdk:csv:customresourcedefinitions:type=status
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type" protobuf:"bytes,1,rep,name=conditions"`
 }

@@ -21,10 +21,8 @@ import (
 	"fmt"
 
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
-	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -37,26 +35,6 @@ import (
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
 	adm_kubernetes "github.com/uyuni-project/uyuni-tools/mgradm/shared/kubernetes"
 	uyuni_types "github.com/uyuni-project/uyuni-tools/shared/types"
-)
-
-const serverFinalizer = "uyuni.uyuni-project.org/serverfinalizer"
-
-const (
-	// typeAvailableServer represents the status of the Deployment reconciliation
-	typeAvailableServer = "Available"
-	// typeDegradedServer represents the status used when the server is deleted and the finalizer operations are to occur.
-	typeDegradedServer = "Degraded"
-	// typeProgressingServer represents the status of the server being setup or upgraded.
-	typeProgressingServer = "Progressing"
-)
-
-const (
-	// reasonMirrorPvcMissing is the reason value when the server requires a mirror PVC but can't find it.
-	reasonMirrorPvcMissing = "MirrorPvcMissing"
-	// reasonMissingTLSSecret is the reason value when the server is waiting for the TLS secret to be ready.
-	reasonMissingTLSSecret = "MissingTLSSecret"
-	// reasonMissingDBSSecret is the reason value when the server is waiting for the database secret to be ready.
-	reasonMissingDBSecret = "MissingDBSecret"
 )
 
 // ServerReconciler reconciles a Server object
@@ -100,31 +78,13 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 		return ctrl.Result{}, err
 	}
 
-	// Let's just set the status as Unknown when no status are available
-	if len(server.Status.Conditions) == 0 {
-		logger.Info("Starting reconciliation for server")
-		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-			Type:    typeAvailableServer,
-			Status:  metav1.ConditionUnknown,
-			Reason:  "Reconciling",
-			Message: "Starting reconciliation",
-		})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-
-		// Let's re-fetch the server Custom Resource after update the status
-		// so that we have the latest state of the resource on the cluster and we will avoid
-		// raise the issue "the object has been modified, please apply
-		// your changes to the latest version and try again" which would re-trigger the reconciliation
-		// if we try to update it again in the following operations
-		if err := r.Get(ctx, req.NamespacedName, server); err != nil {
-			logger.Error(err, "Failed to re-fetch server")
-			return ctrl.Result{}, err
-		}
+	// Update the PendingTask condition and wait if it's still pending
+	if res, err := r.checkPendingTask(ctx, server); res != nil {
+		return *res, err
 	}
 
 	// TODO Start a data sync job for migration if requested
+	// TODO When starting a migration, add the Initialized condition to true to skip setup
 
 	// TODO Do we have a running data sync job to wait for?
 
@@ -132,6 +92,14 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// Create PersistentVolumeClaims if needed
 	if err := r.checkVolumeClaims(ctx, server); err != nil {
+		if err := r.setStatusConditions(ctx, server, metav1.Condition{
+			Type:    typeAvailableServer,
+			Reason:  reasonFailure,
+			Status:  metav1.ConditionFalse,
+			Message: err.Error(),
+		}); err != nil {
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -141,48 +109,35 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 
 	// TODO Run the post upgrade job if needed
 
-	// Are the secrets available?
-	if !r.hasTLSSecret(ctx, types.NamespacedName{
-		Namespace: server.Namespace, Name: server.Spec.SSL.ServerSecretName,
-	}) {
-		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-			Type:   typeProgressingServer,
-			Reason: reasonMissingTLSSecret,
-			Status: metav1.ConditionTrue,
-			Message: fmt.Sprintf("Waiting for %s TLS secret in %s namespace",
-				server.Spec.SSL.ServerSecretName,
-				server.Namespace,
-			),
-		})
-		if err != nil {
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
+	if res, err := r.checkTLSSecret(ctx, server); res != nil {
+		return *res, err
 	}
 
-	// Create the ingresses
-	if err := r.checkIngresses(ctx, server); err != nil {
-		return ctrl.Result{}, err
+	if res, err := r.checkIngresses(ctx, server); res != nil {
+		return *res, err
 	}
 
-	// Check for the mirror PV if needed
 	if res, err := r.checkMirror(ctx, server); res != nil {
 		return *res, err
 	}
 
 	// Check that we have the DB credentials secret
-	if valid, err := r.checkDBSecret(
-		ctx, req, server,
+	if res, err := r.checkBasicAuthSecret(
+		ctx, server,
 		types.NamespacedName{Namespace: server.Namespace, Name: server.Spec.DB.CredentialsSecret},
-	); !valid {
-		return ctrl.Result{}, err
+	); res != nil {
+		return *res, err
 	}
 
-	if valid, err := r.checkDBSecret(
-		ctx, req, server,
+	if res, err := r.checkBasicAuthSecret(
+		ctx, server,
 		types.NamespacedName{Namespace: server.Namespace, Name: server.Spec.ReportDB.CredentialsSecret},
-	); !valid {
-		return ctrl.Result{}, err
+	); res != nil {
+		return *res, err
+	}
+
+	if res, err := r.checkSetup(ctx, server); res != nil {
+		return *res, err
 	}
 
 	// Check if the deployment already exists, if not create a new one
@@ -199,10 +154,11 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 			}
 
 			// The following implementation will update the status
-			if err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-				Type:   typeAvailableServer,
-				Status: metav1.ConditionFalse, Reason: "Reconciling",
-				Message: fmt.Sprintf("Failed to create Deployment (%s)", err),
+			if err := r.setStatusConditions(ctx, server, metav1.Condition{
+				Type:    typeAvailableServer,
+				Status:  metav1.ConditionFalse,
+				Reason:  reasonFailure,
+				Message: fmt.Sprintf("Failed to create the uyuni deployment (%s)", err),
 			}); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -218,8 +174,8 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	}
 
 	// Create the services if needed
-	if err := r.checkServices(ctx, server); err != nil {
-		return ctrl.Result{}, err
+	if res, err := r.checkServices(ctx, server); res != nil {
+		return *res, err
 	}
 
 	// TODO Create the coco deployment if needed
@@ -229,9 +185,10 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	// TODO Create the hub service if needed
 
 	// The following implementation will update the status
-	if err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-		Type:   typeAvailableServer,
-		Status: metav1.ConditionTrue, Reason: "Reconciling",
+	if err := r.setStatusConditions(ctx, server, metav1.Condition{
+		Type:    typeAvailableServer,
+		Status:  metav1.ConditionTrue,
+		Reason:  reasonReconciled,
 		Message: "Server resources created successfully",
 	}); err != nil {
 		return ctrl.Result{}, err
@@ -240,81 +197,64 @@ func (r *ServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctr
 	return ctrl.Result{}, nil
 }
 
-func (r *ServerReconciler) setStatusCondition(
+func (r *ServerReconciler) setStatusConditions(
 	ctx context.Context,
-	req ctrl.Request,
 	server *uyuniv1alpha1.Server,
-	condition metav1.Condition,
+	conditions ...metav1.Condition,
 ) error {
 	logger := log.FromContext(ctx)
+	namespacedName := types.NamespacedName{Namespace: server.Namespace, Name: server.Name}
 
 	// Ensure the server instance is the latest
-	if err := r.Get(ctx, req.NamespacedName, server); err != nil {
+	if err := r.Get(ctx, namespacedName, server); err != nil {
 		logger.Error(err, "Failed to re-fetch server")
 		return err
 	}
 
-	meta.SetStatusCondition(&server.Status.Conditions, condition)
-
-	if err := r.Status().Update(ctx, server); err != nil {
-		logger.Error(err, "Failed to update Server status")
-		return err
+	changed := false
+	for _, condition := range conditions {
+		changed = changed || meta.SetStatusCondition(&server.Status.Conditions, condition)
 	}
 
-	if err := r.Get(ctx, req.NamespacedName, server); err != nil {
-		logger.Error(err, "Failed to re-fetch server after setting condition")
-		return err
+	if changed {
+		if err := r.Status().Update(ctx, server); err != nil {
+			logger.Error(err, "Failed to update Server status")
+			return err
+		}
+
+		if err := r.Get(ctx, namespacedName, server); err != nil {
+			logger.Error(err, "Failed to re-fetch server after setting conditions")
+			return err
+		}
 	}
 	return nil
 }
 
-// checkVolumeClaims ensures the PVCs are ready.
-func (r *ServerReconciler) checkVolumeClaims(ctx context.Context, server *uyuniv1alpha1.Server) error {
+func (r *ServerReconciler) removeStatusCondition(
+	ctx context.Context,
+	server *uyuniv1alpha1.Server,
+	conditionType string,
+) error {
 	logger := log.FromContext(ctx)
+	namespacedName := types.NamespacedName{Namespace: server.Namespace, Name: server.Name}
 
-	// Compute the list of PVCs we need
-	mounts := adm_kubernetes.GetServerMounts()
-	mounts = tuneMounts(mounts, &server.Spec.Volumes)
-
-	for _, mount := range mounts {
-		pvc := corev1.PersistentVolumeClaim{}
-		err := r.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: mount.Name}, &pvc)
-		if err != nil && apierrors.IsNotFound(err) {
-			size := mount.Size
-			if size == "" {
-				size = "10Mi"
-			}
-
-			// Create the PVC
-			pvc = corev1.PersistentVolumeClaim{
-				ObjectMeta: metav1.ObjectMeta{
-					Namespace: server.Namespace,
-					Name:      mount.Name,
-					Labels:    labelsForServer(),
-				},
-				Spec: corev1.PersistentVolumeClaimSpec{
-					AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
-					Resources: corev1.VolumeResourceRequirements{
-						Requests: corev1.ResourceList{"storage": resource.MustParse(size)},
-					},
-				},
-			}
-
-			if err := ctrl.SetControllerReference(server, &pvc, r.Scheme); err != nil {
-				return err
-			}
-
-			if err := r.Create(ctx, &pvc); err != nil {
-				logger.Error(err, "Failed to create pvc %s", mount.Name)
-				return err
-			}
-
-		} else if err != nil {
-			return err
-		}
-		// Nothing to do: the pvc is already available
+	// Ensure the server instance is the latest
+	if err := r.Get(ctx, namespacedName, server); err != nil {
+		logger.Error(err, "Failed to re-fetch server")
+		return err
 	}
 
+	if meta.RemoveStatusCondition(&server.Status.Conditions, conditionType) {
+		if err := r.Status().Update(ctx, server); err != nil {
+			logger.Error(err, "Failed to update Server status")
+			return err
+		}
+
+		if err := r.Get(ctx, namespacedName, server); err != nil {
+			logger.Error(err, "Failed to re-fetch server after setting condition")
+			return err
+		}
+	}
 	return nil
 }
 
@@ -343,37 +283,6 @@ func tuneMounts(mounts []uyuni_types.VolumeMount, volumesSpec *uyuniv1alpha1.Vol
 		tunedMounts = append(tunedMounts, mount)
 	}
 	return tunedMounts
-}
-
-// checkMirror ensures that the mirror PVC is present.
-// If the PVC has been found, the result will be nil.
-func (r *ServerReconciler) checkMirror(ctx context.Context, server *uyuniv1alpha1.Server) (*ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	if server.Spec.Volumes.Mirror != "" {
-		// Do we already have the PVC?
-		foundPvc := &corev1.PersistentVolumeClaim{}
-		err := r.Get(ctx, types.NamespacedName{Name: server.Spec.Volumes.Mirror, Namespace: server.Namespace}, foundPvc)
-		if err != nil && apierrors.IsNotFound(err) {
-			// The PVC is missing, requeuing
-			meta.SetStatusCondition(&server.Status.Conditions, metav1.Condition{
-				Type:   typeProgressingServer,
-				Reason: reasonMirrorPvcMissing,
-				Status: metav1.ConditionTrue,
-				Message: fmt.Sprintf("PersistentVolumeClaim %s not found in namespace %s",
-					server.Spec.Volumes.Mirror, server.Namespace,
-				),
-			})
-			if err = r.Status().Update(ctx, server); err != nil {
-				logger.Error(err, "Failed to update Server status")
-				return &ctrl.Result{}, err
-			}
-			return &ctrl.Result{Requeue: true}, nil
-		} else if err != nil {
-			return &ctrl.Result{}, err
-		}
-	}
-	return nil, nil
 }
 
 // installServer runs the uyuni server helm chart.

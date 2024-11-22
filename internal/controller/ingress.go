@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"slices"
 
 	uyuniv1alpha1 "github.com/cbosdo/uyuni-server-operator/api/v1alpha1"
@@ -30,7 +31,7 @@ import (
 func (r *ServerReconciler) checkIngresses(
 	ctx context.Context,
 	server *uyuniv1alpha1.Server,
-) error {
+) (*ctrl.Result, error) {
 	logger := log.FromContext(ctx)
 
 	caIssuer := server.Spec.SSL.IssuerName
@@ -43,12 +44,12 @@ func (r *ServerReconciler) checkIngresses(
 
 	if len(ingresses) == 0 {
 		logger.Info("No or unhandled ingress provided, skipping ingress rules creation")
+		return nil, nil
 	}
 
 	foundIngresses := &net.IngressList{}
 	if err := r.List(ctx, foundIngresses); err != nil {
-		logger.Error(err, "Failed to list ingresses")
-		return err
+		return &ctrl.Result{}, fmt.Errorf("Failed to list ingresses (%s)", err)
 	}
 
 	for _, ingressDef := range ingresses {
@@ -66,16 +67,15 @@ func (r *ServerReconciler) checkIngresses(
 		} else {
 			// Create the missing ingress
 			if err := ctrl.SetControllerReference(server, ingressDef, r.Scheme); err != nil {
-				return err
+				return &ctrl.Result{}, err
 			}
 			if err := r.Create(ctx, ingressDef); err != nil {
-				logger.Error(err, "Failed to create new Ingress", "ingressName", name)
-				return err
+				return &ctrl.Result{}, fmt.Errorf("Failed to create new %s Ingress (%s)", name, err)
 			}
 		}
 	}
 
 	// TODO Remove remaining ingress that are linked to the server resource
 
-	return nil
+	return nil, nil
 }

@@ -25,42 +25,40 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	ctrl "sigs.k8s.io/controller-runtime"
 )
 
-func (r *ServerReconciler) checkDBSecret(
+// checkDBSecret checks the presence and validity of a basic-auth secret.
+func (r *ServerReconciler) checkBasicAuthSecret(
 	ctx context.Context,
-	req reconcile.Request,
 	server *uyuniv1alpha1.Server,
 	namespacedName types.NamespacedName,
-) (bool, error) {
-	logger := log.FromContext(ctx)
+) (*ctrl.Result, error) {
 	secret := &corev1.Secret{}
 	if err := r.Get(ctx, namespacedName, secret); err != nil {
 		if !apierrors.IsNotFound(err) {
-			logger.Error(err, "failed to get secret", "secret", namespacedName.Name)
+			return &ctrl.Result{}, fmt.Errorf("Failed to get %s secret (%s)", namespacedName.Name, err)
 		}
-		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-			Type:   typeProgressingServer,
-			Reason: reasonMissingDBSecret,
-			Status: metav1.ConditionTrue,
-			Message: fmt.Sprintf("Waiting for %s DB secret in %s namespace",
+		err := r.setStatusConditions(ctx, server, metav1.Condition{
+			Type:   typeAvailableServer,
+			Reason: reasonMissingSecret,
+			Status: metav1.ConditionFalse,
+			Message: fmt.Sprintf("Waiting for %s basic-auth secret in %s namespace",
 				namespacedName.Name,
 				namespacedName.Namespace,
 			),
 		})
 		if err != nil {
-			return false, err
+			return &ctrl.Result{}, err
 		}
-		return false, nil
+		return &ctrl.Result{Requeue: true}, nil
 	}
 
 	// We want basic-auth since postgresql operator requires it too.
 	if secret.Type != "kubernetes.io/basic-auth" {
-		err := r.setStatusCondition(ctx, req, server, metav1.Condition{
-			Type:   typeProgressingServer,
-			Reason: reasonMissingDBSecret,
+		err := r.setStatusConditions(ctx, server, metav1.Condition{
+			Type:   typeAvailableServer,
+			Reason: reasonMissingSecret,
 			Status: metav1.ConditionTrue,
 			Message: fmt.Sprintf("%s secret in %s namespace should be of basic-auth type",
 				namespacedName.Name,
@@ -68,9 +66,9 @@ func (r *ServerReconciler) checkDBSecret(
 			),
 		})
 		if err != nil {
-			return false, err
+			return &ctrl.Result{}, err
 		}
-		return false, nil
+		return &ctrl.Result{Requeue: true}, nil
 	}
-	return true, nil
+	return nil, nil
 }

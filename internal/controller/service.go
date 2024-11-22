@@ -18,6 +18,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 
@@ -26,15 +27,12 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func (r *ServerReconciler) checkServices(
 	ctx context.Context,
 	server *uyuniv1alpha1.Server,
-) error {
-	logger := log.FromContext(ctx)
-
+) (*ctrl.Result, error) {
 	services := kubernetes.GetServices(server.Namespace, server.Spec.Debug)
 
 	managedServices := &corev1.ServiceList{}
@@ -43,8 +41,7 @@ func (r *ServerReconciler) checkServices(
 		client.InNamespace(server.Namespace),
 		client.MatchingLabels{"app.kubernetes.io/name": "uyuni-server"},
 	); err != nil {
-		logger.Error(err, "Failed to list the managed services")
-		return err
+		return &ctrl.Result{}, fmt.Errorf("Failed to list the managed services (%s)", err)
 	}
 
 	allServices := &corev1.ServiceList{}
@@ -52,8 +49,7 @@ func (r *ServerReconciler) checkServices(
 		ctx, allServices,
 		client.InNamespace(server.Namespace),
 	); err != nil {
-		logger.Error(err, "Failed to list the all services")
-		return err
+		return &ctrl.Result{}, fmt.Errorf("Failed to list all the services (%s)", err)
 	}
 
 	customServices := []string{}
@@ -79,11 +75,10 @@ func (r *ServerReconciler) checkServices(
 			} else {
 				// Create the missing service
 				if err := ctrl.SetControllerReference(server, svc, r.Scheme); err != nil {
-					return err
+					return &ctrl.Result{}, err
 				}
 				if err := r.Create(ctx, svc); err != nil {
-					logger.Error(err, "Failed to create new service", "serviceName", name)
-					return err
+					return &ctrl.Result{}, fmt.Errorf("Failed to create new %s service (%s)", name, err)
 				}
 			}
 		}
@@ -91,5 +86,5 @@ func (r *ServerReconciler) checkServices(
 
 	// TODO Remove remaining services that are linked to the server resource
 
-	return nil
+	return nil, nil
 }
