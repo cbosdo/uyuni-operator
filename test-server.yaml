@@ -1,0 +1,106 @@
+# Cert-manager self-signed CA and server certificate setup
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: uyuni-root-issuer
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: uyuni-ca
+spec:
+  isCA: true
+  dnsNames:
+    - dev2-srv.mgr.lab
+  subject:
+    organizations:
+      - test
+  commonName: dev2-srv.mgr.lab
+  secretName: uyuni-ca
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: uyuni-root-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: uyuni-ca-issuer
+spec:
+  ca:
+    secretName: uyuni-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: uyuni-server
+spec:
+  isCA: false
+  subject:
+    organizations:
+      - test
+  dnsNames:
+    - dev2-srv.mgr.lab
+  commonName: dev2-srv.mgr.lab
+  secretName: uyuni-server-tls
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+  issuerRef:
+    name: uyuni-ca-issuer
+    kind: Issuer
+    group: cert-manager.io
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: admin-credentials
+type: kubernetes.io/basic-auth
+data:
+  username: YWRtaW4K
+  password: YWRtaW4K
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: db-credentials
+type: kubernetes.io/basic-auth
+data:
+  username: c3BhY2V3YWxr
+  password: c3BhY2V3YWxr
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: reportdb-credentials
+type: kubernetes.io/basic-auth
+data:
+  username: cHl0aGlhX3N1c2VtYW5hZ2Vy
+  password: ajFuOVVweFlGdmZLWWFobzU5ZWQ1elFCc1ZNdUZ0MXIrQ2pCeGtEMg==
+---
+# Uyuni server itself
+apiVersion: uyuni.uyuni-project.org/v1alpha1
+kind: Server
+metadata:
+  name: test
+spec:
+  fqdn: dev2-srv.mgr.lab
+  timezone: CET
+  email: admin@uyuni-test.mgr.lab
+  ingress: traefik
+  pullPolicy: Never
+  image: "registry.opensuse.org/uyuni/server:test"
+  ssl:
+    issuerName: uyuni-ca-issuer
+  db:
+    credentialsSecret: db-credentials
+  reportdb:
+    credentialsSecret: reportdb-credentials
+  adminCredentialsSecret: admin-credentials
+  services:
+    type: LoadBalancer

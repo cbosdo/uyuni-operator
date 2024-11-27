@@ -1,8 +1,14 @@
 # uyuni-server-operator
-// TODO(user): Add simple overview of use/purpose
+
+This operator deploys Uyuni server on kubernetes.
 
 ## Description
-// TODO(user): An in-depth paragraph about your project and overview of use
+
+Demo video:
+
+![demo video](./docs/demo.gif)
+
+The test YAML file with the resources for the deployment: [docs/test-server.yaml](./docs/test-server.yaml)
 
 ## Getting Started
 
@@ -67,7 +73,6 @@ make undeploy
 ```
 
 ## Contributing
-// TODO(user): Add detailed information on how you would like others to contribute to this project
 
 **NOTE:** Run `make help` for more information on all potential `make` targets
 
